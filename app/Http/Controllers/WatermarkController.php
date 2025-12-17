@@ -10,150 +10,265 @@ class WatermarkController extends Controller
 {
     public function process(Request $request)
     {
-        // --- KONFIGURASI ---
-        // Perpanjang batas waktu eksekusi (5 menit) agar tidak timeout saat download gambar AI
+        // Setup Resource
         set_time_limit(300);
-        // Perbesar batas memori untuk menangani pengolahan gambar resolusi tinggi
         ini_set('memory_limit', '512M');
 
-        // --- VALIDASI INPUT DARI N8N ---
         $request->validate([
-            'image_url' => 'required|url',            // Link gambar dari Pollinations
-            'title'     => 'required|string|max:100', // Judul konten untuk ditulis
-            'template'  => 'nullable|integer|in:1,2,3' // Pilihan template (opsional)
+            'title'     => 'required|string|max:200',
+            'image_url' => 'required|url',
         ]);
 
         try {
-            // Inisialisasi Manager Gambar (Driver GD)
             $manager = new ImageManager(new Driver());
-
-            // ==================================================
-            // LANGKAH 1: DOWNLOAD & SIAPKAN GAMBAR AI
-            // ==================================================
-            // Gunakan context stream untuk download yang lebih stabil
-            $opts = ["http" => ["header" => "User-Agent: Mozilla/5.0\r\n", "timeout" => 120]];
-            $context = stream_context_create($opts);
-            $imageContent = file_get_contents($request->image_url, false, $context);
             
-            if (!$imageContent) return response()->json(['error' => 'Gagal download gambar AI dari URL'], 400);
-
-            $aiImage = $manager->read($imageContent);
-            // Paksa resize gambar AI menjadi kotak sempurna 1080x1080
-            // agar konsisten ditaruh di bagian atas kanvas.
-            $aiImage->resize(1080, 1080);
-
-
-            // ==================================================
-            // LANGKAH 2: TENTUKAN TEMPLATE WARNA
-            // ==================================================
-            // Jika n8n tidak mengirim nomor template, pilih acak 1 sampai 3.
-            $templateChoice = $request->template ?? rand(1, 3);
+            // =========================================================
+            // 0. LOGIKA ROTASI & RANDOMIZE OVERLAY
+            // =========================================================
+            $dayOfYear = now()->dayOfYear;
             
-            // Default config
-            $bgColor = '#ffffff'; $textColor = '#111827'; $accentColor = '#2563EB';
-
-            switch ($templateChoice) {
-                case 1: // TEMPLATE 1: CLEAN WHITE (Putih Bersih)
-                    $bgColor = '#ffffff';
-                    $textColor = '#1f2937'; // Abu gelap
-                    $accentColor = '#2563EB'; // Biru terang
-                    break;
-                case 2: // TEMPLATE 2: TRUST CORPORATE (Biru Tua)
-                    $bgColor = '#1e3a8a';
-                    $textColor = '#ffffff'; // Putih
-                    $accentColor = '#fbbf24'; // Kuning emas
-                    break;
-                case 3: // TEMPLATE 3: BOLD MODERN (Hitam/Gelap)
-                    $bgColor = '#111827';
-                    $textColor = '#f3f4f6'; // Putih abu
-                    $accentColor = '#ef4444'; // Merah
-                    break;
-            }
-
-
-            // ==================================================
-            // LANGKAH 3: RAKIT KANVAS UTAMA
-            // ==================================================
-            // Buat kanvas kosong ukuran Portrait (1080 lebar x 1350 tinggi)
-            // Isi warnanya sesuai background template yang dipilih ($bgColor)
-            $finalImage = $manager->create(1080, 1350)->fill($bgColor);
-
-
-            // ==================================================
-            // LANGKAH 4: TEMPEL ELEMEN-ELEMEN
-            // ==================================================
-
-            // A. Tempel Gambar AI di bagian ATAS TENGAH
-            $finalImage->place($aiImage, 'top-center');
-
-            // B. Buat & Tempel Garis Aksen
-            // Garis ini memisahkan gambar AI dengan area footer teks
-            $accentLine = $manager->create(1080, 15)->fill($accentColor);
-            // Ditempel tepat di bawah gambar AI (di koordinat y=1080)
-            $finalImage->place($accentLine, 'top-left', 0, 1080);
-
-            // C. Tulis JUDUL UTAMA (Dari Input n8n)
-            $fontPathBold = public_path('fonts/Roboto_Condensed-SemiBold.ttf'); // Sesuaikan nama file font-mu
-            
-            if (file_exists($fontPathBold)) {
-                // Koordinat x=540 (tengah), y=1200 (area footer)
-                $finalImage->text($request->title, 540, 1200, function ($font) use ($fontPathBold, $textColor) {
-                    $font->file($fontPathBold);
-                    $font->size(58);       // Ukuran font besar
-                    $font->color($textColor);
-                    $font->align('center'); // Rata tengah secara horizontal
-                    $font->valign('middle'); // Rata tengah secara vertikal di titik koordinat
-                    $font->wrap(1000);     // Bungkus teks otomatis jika melebihi lebar 1000px
-                    $font->lineHeight(1.3); // Jarak antar baris
-                });
+            // Tentukan warna berdasarkan hari (ganjil = green, genap = blue)
+            if ($dayOfYear % 2 != 0) {
+                $baseColor = 'green';
+                $themeColor = '#56B5A0';
+                $highlightColor = '#fff723';
             } else {
-                 // Opsional: Error log jika font tidak ditemukan
-                 // error_log("Font file not found at: " . $fontPathBold);
+                $baseColor = 'blue';
+                $themeColor = '#37499c';
+                $highlightColor = '#b8d8ff';
+            }
+            
+            // Random pilih versi up atau below
+            $overlayVersion = (rand(0, 1) === 0) ? 'up' : 'below';
+            $overlayFilename = "overlay_{$baseColor}_{$overlayVersion}.png";
+            
+            // Tentukan alignment berdasarkan versi overlay
+            $isBelow = ($overlayVersion === 'below');
+            $textAlign = $isBelow ? 'left' : 'center';
+            $textX = $isBelow ? 60 : 540; // 60px dari kiri untuk left, 540 untuk center
+
+            // =========================================================
+            // LAYER 1 & 2 (BACKGROUND & OVERLAY)
+            // =========================================================
+            // 1. Buat Canvas Dasar Dulu (Wadah Utama)
+            $finalImage = $manager->create(1080, 1350);
+
+            // 2. Download Gambar User
+            $bgContent = @file_get_contents($request->image_url, false, stream_context_create([
+                "http" => ["header" => "User-Agent: Mozilla/5.0\r\n", "timeout" => 60]
+            ]));
+
+            // 3. Jika Gambar Ada, Tempelkan di posisi Y yang diinginkan
+            if ($bgContent) {
+                $userImage = $manager->read($bgContent);
+                $userImage->cover(1080, 1350);
+                
+                // Geser gambar berdasarkan versi overlay
+                // UP: geser ke bawah (positive), BELOW: geser ke atas (negative)
+                $posisiY = $isBelow ? -150 : 150;
+                
+                $finalImage->place($userImage, 'top-left', 0, $posisiY);
             }
 
-            // D. Tulis SUB-JUDUL (Branding statis)
-            // Menggunakan font yang sama tapi lebih kecil, ditaruh di bawah judul utama
-            if (file_exists($fontPathBold)) {
-                $finalImage->text('Solusi Manajemen Stok UKM', 540, 1310, function ($font) use ($fontPathBold, $textColor) {
-                    $font->file($fontPathBold);
-                    $font->size(24);
-                    $font->color($textColor);
-                    $font->align('center');
-                    $font->valign('top');
+            // 4. Tempelkan Overlay
+            $overlayPath = public_path($overlayFilename);
+            if (file_exists($overlayPath)) {
+                $overlay = $manager->read($overlayPath);
+                $overlay->resize(1080, 1350);
+                $finalImage->place($overlay, 'top-left', 0, 0);
+            } else {
+                // Fallback jika file overlay tidak ada
+                $rgbaColor = $this->hexToRgba($themeColor, 0.7);
+                $finalImage->drawRectangle(0, 0, function ($draw) use ($rgbaColor) {
+                    $draw->size(1080, 1350);
+                    $draw->background($rgbaColor);
                 });
             }
 
+            // =========================================================
+            // LAYER 3: TEXT
+            // =========================================================
 
-            // ==================================================
-            // LANGKAH 5: TEMPEL WATERMARK LOGO (OVERLAY)
-            // ==================================================
-            $logoPath = public_path('watermark.png');
+            // A. Logo
+            $logoPath = public_path('bukuerp_logo_white.png');
             if (file_exists($logoPath)) {
-                $watermark = $manager->read($logoPath);
-                
-                // Resize proporsional logo agar tidak terlalu besar (misal lebar 250px)
-                $watermark->scaleDown(width: 250);
-
-                // Tempel di Pojok Kanan Atas dengan sedikit jarak (margin 40px)
-                $finalImage->place($watermark, 'top-right', 40, 40);
+                $logo = $manager->read($logoPath)->scale(height: 50);
+                $finalImage->place($logo, 'top-left', 60, 60);
             }
 
+            // B. Logika Split Judul
+            $rawTitle = $request->title;
+            $topText = 'BUKUERP INSIGHT BISNIS';
+            $rawTitle = str_replace("\r\n", "\n", $rawTitle);
 
-            // ==================================================
-            // LANGKAH 6: OUTPUT
-            // ==================================================
-            // Kembalikan hasil sebagai file JPEG kualitas 90
-            return response($finalImage->toJpeg(90)->toString())
-                ->header('Content-Type', 'image/jpeg');
+            $whiteText = $rawTitle;
+            $blueText = '';
+
+            // Split Logic
+            if (strpos($rawTitle, '|') !== false) {
+                $parts = explode('|', $rawTitle, 2);
+                $whiteText = trim($parts[0]);
+                $blueText = trim($parts[1]);
+            } elseif (strpos($rawTitle, "\n") !== false) {
+                $parts = explode("\n", $rawTitle, 2);
+                $whiteText = trim($parts[0]);
+                $blueText = trim($parts[1]);
+            } elseif (preg_match('/^(.+?[?!:])\s+(.+)$/s', $rawTitle, $matches)) {
+                $whiteText = trim($matches[1]);
+                $blueText = trim($matches[2]);
+            }
+
+            // --- APLIKASI BENTUK (hanya untuk overlay UP yang center) ---
+            if (!$isBelow && strpos($whiteText, "\n") === false) {
+                $whiteText = $this->applyTextShape($whiteText, 'pyramid');
+            }
+
+            // C. Render Teks
+            $fontPath = public_path('fonts/Roboto_Condensed-SemiBold.ttf');
+            $shadowColor = 'rgba(0, 0, 0, 0.5)';
+
+            if ($isBelow) {
+                // LAYOUT UNTUK OVERLAY BELOW (Rata Kiri)
+                $currentY = 900; // Mulai dari bawah
+                
+                // 1. Label Kecil (Kuning) - Rata Kiri
+                $this->renderText($finalImage, $topText, $currentY, 35, '#ffe817', $fontPath, 15, $shadowColor, $textAlign, $textX, 1000);
+                
+                // 2. Judul Utama (Putih) - Rata Kiri
+                $this->renderText($finalImage, $whiteText, $currentY, 100, '#ffffff', $fontPath, 50, $shadowColor, $textAlign, $textX, 1000);
+                
+                // Cek apakah judul putih hanya sebaris
+                $isSingleLine = (strpos($whiteText, "\n") === false);
+                
+                if ($isSingleLine) {
+                    $currentY -= 100;
+                } else {
+                    $currentY -= 60;
+                }
+                
+                // 3. Judul Highlight (Biru) - Rata Kiri
+                if ($blueText) {
+                    $this->renderText($finalImage, $blueText, $currentY, 60, $highlightColor, $fontPath, 5, $shadowColor, $textAlign, $textX, 1000);
+                }
+                
+            } else {
+                // LAYOUT UNTUK OVERLAY UP (Center - KODE LAMA)
+                $currentY = 150;
+                
+                // 1. Label Kecil
+                $this->renderText($finalImage, $topText, $currentY, 35, '#ffe817', $fontPath, 5, $shadowColor, $textAlign, $textX, 1050);
+                
+                // 2. Judul Utama (Putih)
+                $this->renderText($finalImage, $whiteText, $currentY, 100, '#ffffff', $fontPath, 5, $shadowColor, $textAlign, $textX, 1050);
+                
+                // Cek apakah judul putih hanya sebaris
+                $isSingleLine = (strpos($whiteText, "\n") === false);
+                
+                if ($isSingleLine) {
+                    $currentY -= 100;
+                } else {
+                    $currentY -= 60;
+                }
+                
+                // 3. Judul Highlight (Biru)
+                if ($blueText) {
+                    $this->renderText($finalImage, $blueText, $currentY, 60, $highlightColor, $fontPath, 5, $shadowColor, $textAlign, $textX, 1050);
+                }
+            }
+
+            return response($finalImage->toJpeg(95)->toString())->header('Content-Type', 'image/jpeg');
 
         } catch (\Exception $e) {
-            // Tangkap error dan kembalikan detailnya (untuk debugging)
-            return response()->json([
-                'status' => 'error',
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine()
-            ], 500);
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
         }
+    }
+
+    // --- LOGIKA PEMBENTUKAN PIRAMIDA (UPDATED: MAKS 2 BARIS) ---
+    private function applyTextShape($text, $shape)
+    {
+        $words = explode(' ', $text);
+        $count = count($words);
+
+        // Kalau cuma 1 atau 2 kata, biarkan apa adanya
+        if ($count < 3) return $text;
+
+        $totalChars = strlen($text);
+        
+        if ($shape === 'pyramid') {
+            $ratio = 0.45;
+        } else {
+            $ratio = 0.5;
+        }
+
+        $targetLength = $totalChars * $ratio;
+        $currentLength = 0;
+        $newText = '';
+        $breakFound = false;
+
+        foreach ($words as $index => $word) {
+            $wordLen = strlen($word);
+            
+            if (!$breakFound && ($currentLength + $wordLen) >= $targetLength && $index > 0) {
+                $newText .= "\n" . $word . ' ';
+                $breakFound = true;
+            } else {
+                $newText .= $word . ' ';
+            }
+            
+            $currentLength += $wordLen + 1;
+        }
+
+        return trim($newText);
+    }
+
+    // --- HELPER RENDER (UPDATED: Support alignment & custom X position) ---
+    private function renderText($image, $text, &$y, $size, $color, $fontPath, $marginBottom, $shadowColor = null, $align = 'center', $posX = 540, $maxWidth = 1050)
+    {
+        if (empty($text)) return;
+        $lineHeight = 1.25;
+
+        // Shadow Layer
+        if ($shadowColor) {
+            $image->text($text, $posX + 4, $y + 4, function ($font) use ($fontPath, $size, $shadowColor, $maxWidth, $lineHeight, $align) {
+                if (file_exists($fontPath)) $font->file($fontPath);
+                $font->size($size);
+                $font->color($shadowColor);
+                $font->align($align);
+                $font->valign('top');
+                $font->wrap($maxWidth);
+                $font->lineHeight($lineHeight);
+            });
+        }
+
+        // Main Text Layer
+        $image->text($text, $posX, $y, function ($font) use ($fontPath, $size, $color, $maxWidth, $lineHeight, $align) {
+            if (file_exists($fontPath)) $font->file($fontPath);
+            $font->size($size);
+            $font->color($color);
+            $font->align($align);
+            $font->valign('top');
+            $font->wrap($maxWidth);
+            $font->lineHeight($lineHeight);
+        });
+
+        $charPerLine = floor($maxWidth / ($size * 0.5));
+        $lineCount = ceil(strlen($text) / $charPerLine);
+        $lineCount = max($lineCount, substr_count($text, "\n") + 1);
+        $y += ($size * $lineHeight * $lineCount) + $marginBottom;
+    }
+
+    private function hexToRgba($hex, $alpha = 1)
+    {
+        $hex = str_replace("#", "", $hex);
+        if (strlen($hex) == 3) {
+            $r = hexdec(substr($hex, 0, 1) . substr($hex, 0, 1));
+            $g = hexdec(substr($hex, 1, 1) . substr($hex, 1, 1));
+            $b = hexdec(substr($hex, 2, 1) . substr($hex, 2, 1));
+        } else {
+            $r = hexdec(substr($hex, 0, 2));
+            $g = hexdec(substr($hex, 2, 2));
+            $b = hexdec(substr($hex, 4, 2));
+        }
+        return "rgba($r, $g, $b, $alpha)";
     }
 }
