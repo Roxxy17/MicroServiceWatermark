@@ -10,97 +10,81 @@ class WatermarkController2 extends Controller
 {
     public function process(Request $request)
     {
-        // 1. Setup Resource
         set_time_limit(300);
         ini_set('memory_limit', '512M');
 
         $request->validate([
             'image_url' => 'required|url',
-            // Kita tampung caption instagram disini
+            'title'     => 'nullable|string', // Field baru untuk Judul
             'caption'   => 'required|string', 
         ]);
 
         try {
             $manager = new ImageManager(new Driver());
 
-            // =========================================================
-            // 0. LOGIKA HARI (HIJAU VS BIRU)
-            // =========================================================
-            // Sama persis dengan slide 1 agar konsisten
+            // 0. LOGIKA HARI
             $dayOfYear = now()->dayOfYear;
-            
-            if ($dayOfYear % 2 != 0) {
-                // Hari Ganjil = Hijau
-                $overlayFilename = 'slide2_overlay_green.png'; 
-            } else {
-                // Hari Genap = Biru
-                $overlayFilename = 'slide2_overlay_blue.png';
-            }
+            $overlayFilename = ($dayOfYear % 2 != 0) ? 'slide2_overlay_green.png' : 'slide2_overlay_blue.png';
 
-            // =========================================================
-            // LAYER 1: BACKGROUND (GAMBAR GENERATE)
-            // =========================================================
+            // LAYER 1: BACKGROUND
             $finalImage = $manager->create(1080, 1350);
             
-            // Download gambar AI
             $bgContent = @file_get_contents($request->image_url, false, stream_context_create([
                 "http" => ["header" => "User-Agent: Mozilla/5.0\r\n", "timeout" => 60]
             ]));
 
             if ($bgContent) {
                 $userImage = $manager->read($bgContent);
-                // Resize full cover
                 $userImage->cover(1080, 1350);
-                // Tempel di posisi 0,0
                 $finalImage->place($userImage, 'top-left', 0, 0);
             } else {
-                // Fallback jika gagal download
                 $finalImage->fill('#f0f0f0');
             }
 
-            // =========================================================
-            // LAYER 2: TEMPLATE OVERLAY (KOTAK PUTIH)
-            // =========================================================
-            // Pastikan file ini ada di folder public/
+            // LAYER 2: OVERLAY KOTAK PUTIH
             $overlayPath = public_path($overlayFilename);
-            
             if (file_exists($overlayPath)) {
                 $overlay = $manager->read($overlayPath);
                 $overlay->resize(1080, 1350);
                 $finalImage->place($overlay, 'top-left', 0, 0);
             } else {
-                // Fallback: Buat kotak putih manual jika file overlay hilang
-                // Simulasi area kotak putih di tengah
-                $finalImage->drawRectangle(100, 150, function ($draw) {
-                    $draw->size(880, 1050);
-                    $draw->background('rgba(255, 255, 255, 0.9)');
+                // Fallback kotak putih transparan
+                $finalImage->drawRectangle(100, 200, function ($draw) {
+                    $draw->size(880, 950);
+                    $draw->background('rgba(255, 255, 255, 0.92)');
                 });
             }
 
             // =========================================================
-            // LAYER 3: TEKS CAPTION (KECIL-KECIL RAPI)
+            // LAYER 3: RENDER TEKS (JUDUL & BODY)
             // =========================================================
             
-            // Ambil teks caption dari n8n
+            // Konfigurasi Area Teks
+            // Area X dimulai dari 150 agar ada padding kiri kanan yang lega
+            // Lebar 780 agar teks tidak mepet pinggir kotak
+            $textAreaX = 150; 
+            $textAreaWidth = 780; 
+
+            // 1. RENDER JUDUL (Di bagian atas kotak)
+            $titleText = $request->title ?? ''; 
+            // Posisi Y judul dimulai di 280 (agak turun dari atas kotak)
+            $nextY = $this->renderTitle($finalImage, $titleText, 540, 280, $textAreaWidth, '#1a1a1a');
+
+            // 2. RENDER BODY (Di bawah judul)
             $captionText = $request->caption;
             
-            // Bersihkan format teks (ubah enter windows jadi unix)
+            // Cleaning Text
             $captionText = str_replace(["\r\n", "\r"], "\n", $captionText);
+            $captionText = str_replace(['**', '*'], '', $captionText); // Hapus markdown
+            $captionText = str_replace("\n-", "\n\n-", $captionText); // Tambah jarak antar poin
 
-            // KONFIGURASI POSISI TEKS (Sesuaikan dengan kotak putih di overlaymu)
-            // Angka ini estimasi berdasarkan template overlay kotak putih pada umumnya
-            $textAreaX = 140;      // Jarak dari kiri (padding kiri kotak putih)
-            $textAreaY = 200;      // Jarak dari atas (padding atas kotak putih)
-            $textAreaWidth = 800;  // Lebar area teks (jangan sampai nabrak pinggir)
+            // Beri jarak (margin top) dari Judul ke Body, misal 60px
+            $bodyStartY = $nextY + 60; 
+
+            $fontPathBody = public_path('fonts/Roboto_Condensed-Regular.ttf'); // Gunakan font Regular biar enak dibaca
             
-            // Gunakan font Regular/SemiBold agar terbaca enak sebagai body text
-            $fontPath = public_path('fonts/Roboto_Condensed-SemiBold.ttf'); 
+            $this->renderBodyText($finalImage, $captionText, $textAreaX, $bodyStartY, $textAreaWidth, '#333333', $fontPathBody);
 
-            // Render Caption
-            // Warna teks GELAP (#333333) karena background kotak putih
-            $this->renderBodyText($finalImage, $captionText, $textAreaX, $textAreaY, $textAreaWidth, '#333333', $fontPath);
-
-            // Output JPEG
             return response($finalImage->toJpeg(90)->toString())->header('Content-Type', 'image/jpeg');
 
         } catch (\Exception $e) {
@@ -108,38 +92,50 @@ class WatermarkController2 extends Controller
         }
     }
 
-    // --- HELPER KHUSUS TEXT BODY (CAPTION) ---
-    private function renderBodyText($image, $text, $x, $y, $width, $color, $fontPath)
+    // --- FUNGSI RENDER JUDUL (CENTER, BOLD, BESAR) ---
+    private function renderTitle($image, $text, $x, $y, $width, $color)
     {
-        if (empty($text)) return;
+        if (empty($text)) return $y; // Jika tidak ada judul, kembalikan Y awal
 
-        // Ukuran font body (caption) biasanya sekitar 30-40px untuk resolusi 1080
-        $fontSize = 32; 
-        
-        // Line Height agak lega (1.5x) agar enak dibaca
-        $lineHeight = 1.5; 
+        $fontSize = 55; // Font Besar
+        $lineHeight = 1.3;
+        $fontPath = public_path('fonts/Roboto_Condensed-Bold.ttf'); // Wajib Bold
+
+        // Kita hitung estimasi tinggi judul agar body text bisa menyesuaikan posisinya
+        // (Sangat basic approximation, idealnya pakai box size calculation)
+        $charLength = strlen($text);
+        $lines = ceil($charLength / 25); // Asumsi 25 karakter per baris untuk font 55
+        $heightEstimate = $lines * ($fontSize * $lineHeight);
 
         $image->text($text, $x, $y, function ($font) use ($fontPath, $fontSize, $color, $width, $lineHeight) {
             if (file_exists($fontPath)) $font->file($fontPath);
             $font->size($fontSize);
             $font->color($color);
-            $font->align('left');      // Rata Kiri
-            $font->valign('top');      // Mulai dari atas
-            $font->wrap($width);       // Bungkus teks otomatis jika kepanjangan
+            $font->align('center'); // JUDUL RATA TENGAH
+            $font->valign('top');
+            $font->wrap($width);
             $font->lineHeight($lineHeight);
         });
+
+        return $y + $heightEstimate; // Kembalikan posisi Y terakhir
     }
 
-    // Helper Hex to RGBA (Opsional untuk fallback)
-    private function hexToRgba($hex, $alpha = 1) {
-        $hex = str_replace("#", "", $hex);
-        if(strlen($hex) == 3) {
-            $r = hexdec(substr($hex,0,1).substr($hex,0,1));
-            $g = hexdec(substr($hex,1,1).substr($hex,1,1));
-            $b = hexdec(substr($hex,2,1).substr($hex,2,1));
-        } else {
-            $r = hexdec(substr($hex,0,2)); $g = hexdec(substr($hex,2,2)); $b = hexdec(substr($hex,4,2));
-        }
-        return "rgba($r, $g, $b, $alpha)";
+    // --- FUNGSI RENDER BODY (LEFT ALIGN TAPI RAPI) ---
+    private function renderBodyText($image, $text, $x, $y, $width, $color, $fontPath)
+    {
+        if (empty($text)) return;
+
+        $fontSize = 40; // Ukuran pas untuk kalimat (tidak terlalu besar/kecil)
+        $lineHeight = 1.5; // Jarak antar baris dalam 1 kalimat (lega)
+
+        $image->text($text, $x, $y, function ($font) use ($fontPath, $fontSize, $color, $width, $lineHeight) {
+            if (file_exists($fontPath)) $font->file($fontPath);
+            $font->size($fontSize);
+            $font->color($color);
+            $font->align('left'); // Body text Rata Kiri lebih enak dibaca untuk kalimat panjang
+            $font->valign('top');
+            $font->wrap($width);
+            $font->lineHeight($lineHeight);
+        });
     }
 }
