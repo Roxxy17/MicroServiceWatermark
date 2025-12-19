@@ -15,7 +15,7 @@ class WatermarkController2 extends Controller
 
         $request->validate([
             'image_url' => 'required|url',
-            'title'     => 'nullable|string', // Field baru untuk Judul
+            'title'     => 'nullable|string',
             'caption'   => 'required|string', 
         ]);
 
@@ -56,34 +56,43 @@ class WatermarkController2 extends Controller
             }
 
             // =========================================================
-            // LAYER 3: RENDER TEKS (JUDUL & BODY)
+            // LAYER 3: RENDER TEKS (JUDUL & BODY) - SEMUA CENTER
             // =========================================================
             
-            // Konfigurasi Area Teks
-            // Area X dimulai dari 150 agar ada padding kiri kanan yang lega
-            // Lebar 780 agar teks tidak mepet pinggir kotak
-            $textAreaX = 150; 
-            $textAreaWidth = 780; 
+            $centerX = 540; // Titik tengah horizontal
+            $textAreaWidth = 8  80; // Lebar maksimal teks
 
-            // 1. RENDER JUDUL (Di bagian atas kotak)
+            // 1. RENDER JUDUL (Di bagian atas kotak, CENTER, BESAR)
             $titleText = $request->title ?? ''; 
-            // Posisi Y judul dimulai di 280 (agak turun dari atas kotak)
-            $nextY = $this->renderTitle($finalImage, $titleText, 540, 280, $textAreaWidth, '#1a1a1a');
+            $nextY = $this->renderTitle($finalImage, $titleText, $centerX, 250, $textAreaWidth, '#000000');
 
-            // 2. RENDER BODY (Di bawah judul)
+            // 2. GARIS PEMISAH (Accent Line di bawah judul)
+            if (!empty($titleText)) {
+                $lineColor = ($dayOfYear % 2 != 0) ? '#56B5A0' : '#37499c'; // Warna sesuai tema
+                $finalImage->drawRectangle(390, $nextY + 15, function ($draw) use ($lineColor) {
+                    $draw->size(300, 4); // Garis horizontal 300px x 4px
+                    $draw->background($lineColor);
+                });
+                $nextY += 30; // Tambah spacing setelah garis
+            }
+
+            // 3. RENDER BODY (Di bawah judul, CENTER, UKURAN BESAR)
             $captionText = $request->caption;
             
             // Cleaning Text
             $captionText = str_replace(["\r\n", "\r"], "\n", $captionText);
-            $captionText = str_replace(['**', '*'], '', $captionText); // Hapus markdown
-            $captionText = str_replace("\n-", "\n\n-", $captionText); // Tambah jarak antar poin
-
-            // Beri jarak (margin top) dari Judul ke Body, misal 60px
-            $bodyStartY = $nextY + 60; 
-
-            $fontPathBody = public_path('fonts/Roboto_Condensed-Regular.ttf'); // Gunakan font Regular biar enak dibaca
+            $captionText = str_replace(['**', '*'], '', $captionText);
             
-            $this->renderBodyText($finalImage, $captionText, $textAreaX, $bodyStartY, $textAreaWidth, '#333333', $fontPathBody);
+            // Tambahkan jarak ekstra antar paragraf
+            $captionText = preg_replace('/\n(?!\n)/', "\n\n", $captionText);
+            
+            // Beri jarak antara Judul dan Body
+            $bodyStartY = $nextY + 20;
+
+            $fontPathBody = public_path('fonts/Roboto_Condensed-Regular.ttf'); // Gunakan Regular untuk body
+            
+            // Render dengan subtle shadow untuk depth
+            $this->renderBodyText($finalImage, $captionText, $centerX, $bodyStartY, $textAreaWidth, '#2a2a2a', $fontPathBody, true);
 
             return response($finalImage->toJpeg(90)->toString())->header('Content-Type', 'image/jpeg');
 
@@ -95,44 +104,68 @@ class WatermarkController2 extends Controller
     // --- FUNGSI RENDER JUDUL (CENTER, BOLD, BESAR) ---
     private function renderTitle($image, $text, $x, $y, $width, $color)
     {
-        if (empty($text)) return $y; // Jika tidak ada judul, kembalikan Y awal
+        if (empty($text)) return $y;
 
-        $fontSize = 55; // Font Besar
-        $lineHeight = 1.3;
-        $fontPath = public_path('fonts/Roboto_Condensed-Bold.ttf'); // Wajib Bold
+        $fontSize = 70;
+        $lineHeight = 1.35;
+        $fontPath = public_path('fonts/Roboto_Condensed-Bold.ttf'); // Bold untuk judul
 
-        // Kita hitung estimasi tinggi judul agar body text bisa menyesuaikan posisinya
-        // (Sangat basic approximation, idealnya pakai box size calculation)
-        $charLength = strlen($text);
-        $lines = ceil($charLength / 25); // Asumsi 25 karakter per baris untuk font 55
-        $heightEstimate = $lines * ($fontSize * $lineHeight);
-
-        $image->text($text, $x, $y, function ($font) use ($fontPath, $fontSize, $color, $width, $lineHeight) {
+        // Subtle shadow untuk depth
+        $image->text($text, $x + 2, $y + 2, function ($font) use ($fontPath, $fontSize, $width, $lineHeight) {
             if (file_exists($fontPath)) $font->file($fontPath);
             $font->size($fontSize);
-            $font->color($color);
-            $font->align('center'); // JUDUL RATA TENGAH
+            $font->color('rgba(0, 0, 0, 0.1)'); // Shadow sangat subtle
+            $font->align('center');
             $font->valign('top');
             $font->wrap($width);
             $font->lineHeight($lineHeight);
         });
 
-        return $y + $heightEstimate; // Kembalikan posisi Y terakhir
-    }
-
-    // --- FUNGSI RENDER BODY (LEFT ALIGN TAPI RAPI) ---
-    private function renderBodyText($image, $text, $x, $y, $width, $color, $fontPath)
-    {
-        if (empty($text)) return;
-
-        $fontSize = 40; // Ukuran pas untuk kalimat (tidak terlalu besar/kecil)
-        $lineHeight = 1.5; // Jarak antar baris dalam 1 kalimat (lega)
-
+        // Main text
         $image->text($text, $x, $y, function ($font) use ($fontPath, $fontSize, $color, $width, $lineHeight) {
             if (file_exists($fontPath)) $font->file($fontPath);
             $font->size($fontSize);
             $font->color($color);
-            $font->align('left'); // Body text Rata Kiri lebih enak dibaca untuk kalimat panjang
+            $font->align('center');
+            $font->valign('top');
+            $font->wrap($width);
+            $font->lineHeight($lineHeight);
+        });
+
+        $charLength = strlen($text);
+        $lines = ceil($charLength / 20);
+        $heightEstimate = $lines * ($fontSize * $lineHeight);
+
+        return $y + $heightEstimate;
+    }
+
+    // --- FUNGSI RENDER BODY (CENTER, UKURAN LEBIH BESAR, JARAK LEGA) ---
+    private function renderBodyText($image, $text, $x, $y, $width, $color, $fontPath, $withShadow = false)
+    {
+        if (empty($text)) return;
+
+        $fontSize = 45;
+        $lineHeight = 1.2; // Line height lebih lega untuk readability
+
+        // Optional subtle shadow
+        if ($withShadow) {
+            $image->text($text, $x + 1, $y + 1, function ($font) use ($fontPath, $fontSize, $width, $lineHeight) {
+                if (file_exists($fontPath)) $font->file($fontPath);
+                $font->size($fontSize);
+                $font->color('rgba(0, 0, 0, 0.08)'); // Shadow sangat subtle
+                $font->align('center');
+                $font->valign('top');
+                $font->wrap($width);
+                $font->lineHeight($lineHeight);
+            });
+        }
+
+        // Main text
+        $image->text($text, $x, $y, function ($font) use ($fontPath, $fontSize, $color, $width, $lineHeight) {
+            if (file_exists($fontPath)) $font->file($fontPath);
+            $font->size($fontSize);
+            $font->color($color);
+            $font->align('center');
             $font->valign('top');
             $font->wrap($width);
             $font->lineHeight($lineHeight);

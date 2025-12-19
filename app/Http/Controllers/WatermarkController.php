@@ -141,9 +141,9 @@ class WatermarkController extends Controller
                 $isSingleLine = (strpos($whiteText, "\n") === false);
                 
                 if ($isSingleLine) {
-                    $currentY -= 150; // Jarak lebih besar untuk single line
+                    $currentY -= 80;
                 } else {
-                    $currentY -= 60; // Jarak normal untuk multi line
+                    $currentY -= 60;
                 }
                 
                 // 3. Judul Highlight (Biru) - Rata Kiri
@@ -165,7 +165,7 @@ class WatermarkController extends Controller
                 $isSingleLine = (strpos($whiteText, "\n") === false);
                 
                 if ($isSingleLine) {
-                    $currentY -= 100;
+                    $currentY -= 80;
                 } else {
                     $currentY -= 60;
                 }
