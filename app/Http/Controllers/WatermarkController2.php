@@ -60,7 +60,7 @@ class WatermarkController2 extends Controller
             // =========================================================
             
             $centerX = 540; // Titik tengah horizontal
-            $textAreaWidth = 8  80; // Lebar maksimal teks
+            $textAreaWidth = 880; // Lebar maksimal teks
 
             // 1. RENDER JUDUL (Di bagian atas kotak, CENTER, BESAR)
             $titleText = $request->title ?? ''; 

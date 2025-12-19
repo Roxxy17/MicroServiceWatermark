@@ -135,7 +135,7 @@ class WatermarkController extends Controller
                 $this->renderText($finalImage, $topText, $currentY, 35, '#ffe817', $fontPath, 15, $shadowColor, $textAlign, $textX, 1000);
                 
                 // 2. Judul Utama (Putih) - Rata Kiri
-                $this->renderText($finalImage, $whiteText, $currentY, 100, '#ffffff', $fontPath, 50, $shadowColor, $textAlign, $textX, 1000);
+                $this->renderText($finalImage, $whiteText, $currentY, 100, '#ffffff', $fontPath, -80, $shadowColor, $textAlign, $textX, 1000);
                 
                 // Cek apakah judul putih hanya sebaris
                 $isSingleLine = (strpos($whiteText, "\n") === false);
@@ -148,7 +148,7 @@ class WatermarkController extends Controller
                 
                 // 3. Judul Highlight (Biru) - Rata Kiri
                 if ($blueText) {
-                    $this->renderText($finalImage, $blueText, $currentY, 60, $highlightColor, $fontPath, 5, $shadowColor, $textAlign, $textX, 1000);
+                    $this->renderText($finalImage, $blueText, $currentY, 60, $highlightColor, $fontPath, 30, $shadowColor, $textAlign, $textX, 1000);
                 }
                 
             } else {

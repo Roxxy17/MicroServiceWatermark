@@ -9,7 +9,8 @@ Route::get('/user', function (Request $request) {
     return $request->user();
 })->middleware('auth:sanctum');
 
-Route::post('/watermark', [WatermarkController::class, 'process']);
-
-// Route Slide 2 (BARU - Controller Terpisah)
-Route::post('/watermark/slide2', [WatermarkController2::class, 'process']);
+// Proteksi dengan API Token Middleware
+Route::middleware('api.token')->group(function () {
+    Route::post('/watermark', [WatermarkController::class, 'process']);
+    Route::post('/watermark/slide2', [WatermarkController2::class, 'process']);
+});
